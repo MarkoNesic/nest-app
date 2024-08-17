@@ -1,11 +1,18 @@
+import { PrismaService } from './../prisma.service';
 import { Injectable } from '@nestjs/common';
-import { CreateAuthDto } from './dto/create-auth.dto';
 import { UpdateAuthDto } from './dto/update-auth.dto';
 
 @Injectable()
 export class AuthService {
-  create(createAuthDto: CreateAuthDto) {
-    return 'This action adds a new auth';
+  PrismaService: any;
+  constructor(private prisma: PrismaService) {}
+
+  async signin(userName: string, email: string) {
+    const userEmail = await this.PrismaService.user.findOne(email);
+    if (userEmail === email) {
+      throw new Error('Email already exist');
+      return;
+    }
   }
 
   findAll() {
