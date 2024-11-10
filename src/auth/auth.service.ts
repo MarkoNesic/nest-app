@@ -1,15 +1,19 @@
 import { UsersService } from 'src/users/users.service';
-import { Injectable, Res, UnauthorizedException } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Req,
+  Res,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { RegisterDto } from './dto/register.dto';
 import * as argon2 from 'argon2';
-// import { RefreshTokenDto } from './dto/refresh.dto';
 import { SigninDto } from './dto/signin.dto';
 import { Response, Request } from 'express';
-import { ACCOUNT_NOT_FOUND, UNAUTHORIZED } from 'src/constrains';
-
-// import { UNAUTHORIZED } from 'src/constrains';
+import { RedisService } from 'src/redis/redis.service';
 
 @Injectable()
 export class AuthService {
@@ -17,9 +21,14 @@ export class AuthService {
     private readonly userService: UsersService,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private readonly redisService: RedisService,
   ) {}
 
-  async register(registerDto: RegisterDto) {
+  async register(
+    registerDto: RegisterDto,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
     try {
       const userExist = await this.userService.findUserByEmail(
         registerDto.email,
@@ -32,11 +41,26 @@ export class AuthService {
         password: await this.hashPassword(registerDto.password),
       });
       delete user.password;
-      return {
-        access_token: await this.getAccessToken(user.id, user.email),
-        refresh_token: await this.getRefreshToken(user.id, user.email),
-        user,
-      };
+      if (user) {
+        req.session.user = user;
+      }
+      const accessToken = await this.getAccessToken(user.id, user.email);
+      const refreshToken = await this.getRefreshToken(user.id, user.email);
+
+      res.cookie('jwt-token', accessToken, {
+        httpOnly: true, // accessible only by the web server
+        secure: true, // https only
+        sameSite: 'none', // cross site cookie
+        maxAge: 5 * 60 * 1000, // cookie expiry: set to match accessToken (5 min)
+      });
+
+      res.cookie('jwt-token-refresh', refreshToken, {
+        httpOnly: true, // accessible only by the web server
+        secure: true, // https only
+        sameSite: 'none', // cross site cookie
+        maxAge: 5 * 60 * 1000, // cookie expiry: set to match accessToken (5 min)
+      });
+      await this.redisService.set('user', user.id);
     } catch (error) {
       throw new Error(error.message);
     }
@@ -71,13 +95,11 @@ export class AuthService {
         httpOnly: true, // accessible only by the web server
         secure: true, // https only
         sameSite: 'none', // cross site cookie
-        maxAge: 5 * 60 * 1000, // cookie expiry: set to match accessToken (5 min)
+        maxAge: 24 * 60 * 60 * 1000, // cookie expiry: set to match refreshToken (1d)
       });
 
       return {
         accessToken,
-        // access_token: accessToken,
-        // refresh_token: refreshToken,
       };
     } catch (error) {
       console.error(error);
@@ -109,7 +131,7 @@ export class AuthService {
       email,
     };
     const token = await this.jwtService.signAsync(payload, {
-      expiresIn: '15m',
+      expiresIn: this.configService.getOrThrow<string>('accessTokenExpiresIn'),
       secret: this.configService.getOrThrow('JWT_SECRET'),
     });
     return token;
@@ -128,21 +150,17 @@ export class AuthService {
   }
 
   async refresh(req: Request, res: Response) {
-    const cookies = req.cookies;
-    if (!cookies['jwt-token-refresh']) {
-      console.log('no jwt-token-refresh');
-      return res.status(401).json({ message: UNAUTHORIZED });
-    }
-
-    const refreshToken = cookies['jwt-token-refresh'] as string;
-    console.log('refreshToken from cookies is:', refreshToken);
-    const verified = await this.jwtService.verifyAsync(refreshToken, {
-      secret: this.configService.getOrThrow('JWT_SECRET'),
-    });
-    console.log('refresh token is verified:', verified);
-
-    if (!verified) {
-      return res.status(401).json({ message: UNAUTHORIZED });
+    const refreshToken = req.cookies['jwt-token-refresh'] as string;
+    try {
+      const verified = await this.jwtService.verifyAsync(refreshToken, {
+        secret: this.configService.getOrThrow('JWT_REFRESH'),
+      });
+      if (!verified) {
+        res.clearCookie('jwt-token');
+        throw new HttpException('UNAUTHORIZED', HttpStatus.UNAUTHORIZED);
+      }
+    } catch (error) {
+      throw new HttpException('UNAUTHORIZED', HttpStatus.UNAUTHORIZED);
     }
 
     const { email } = this.jwtService.decode(refreshToken) as { email: string };
@@ -150,7 +168,7 @@ export class AuthService {
     const user = await this.userService.findUserByEmail(email);
 
     if (!user) {
-      return res.status(401).json({ message: ACCOUNT_NOT_FOUND });
+      throw new HttpException('NOT_FOUND', HttpStatus.NOT_FOUND);
     }
     // create new access token
     const payload = {
@@ -174,14 +192,3 @@ export class AuthService {
     });
   }
 }
-
-//singin
-// const valid = await argon2.verify(user.password, password);
-// if (!valid) {
-//   throw new Error('Invalid password');
-// }
-// const userIsValidated = await this.validateUser(email, password);
-// if (!userIsValidated) {
-//   return null;
-// }
-//

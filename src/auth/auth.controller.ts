@@ -1,10 +1,19 @@
-import { Body, Controller, Post, Res, Request } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Req,
+  Request,
+  Res,
+  Session,
+  UseGuards,
+} from '@nestjs/common';
+import { Request as ExpressRequest, Response } from 'express';
 import { AuthService } from './auth.service';
-import { SigninDto } from './dto/signin.dto';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { Response, Request as ExpressRequest } from 'express';
 import { RegisterDto } from './dto/register.dto';
-// import { RefreshTokenDto } from './dto/refresh.dto';
+import { SigninDto } from './dto/signin.dto';
+import { RefreshGuard } from './guards/refresh.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -17,9 +26,14 @@ export class AuthController {
   ) {
     return this.authService.signin(signinDto, res);
   }
+
   @Post('register')
-  async register(@Body() registerDto: RegisterDto) {
-    return this.authService.register(registerDto);
+  async register(
+    @Body() registerDto: RegisterDto,
+    @Req() req: ExpressRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.authService.register(registerDto, req, res);
   }
 
   /**
@@ -29,11 +43,19 @@ export class AuthController {
    * @param {@Res()} res - The Express response object.
    * @return {Promise<void>} A promise that resolves when the authentication token is refreshed.
    */
-  @Post('refresh')
+
+  @UseGuards(RefreshGuard)
+  @Get('refresh')
   async refresh(
     @Request() req: ExpressRequest,
     @Res() res: Response,
   ): Promise<Response<any, Record<string, any>>> {
     return this.authService.refresh(req, res);
+  }
+
+  @Get('')
+  async getAuthSession(@Session() session: Record<string, any>) {
+    console.log(session);
+    return session;
   }
 }
